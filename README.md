@@ -1,5 +1,6 @@
 <!--
 README for the OpenRelik Worker Template
+test
 
 This file provides instructions on how to use this template to create a new OpenRelik worker.
 The placeholder `TEMPLATEWORKERNAME` needs to be replaced with the actual name of your worker.
