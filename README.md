@@ -7,9 +7,12 @@ workflow for download or further automation.
 
 ## What you can run from the OpenRelik UI
 
-- **Dissect query (`run_query`)** – pick any Dissect console script (defaults to `target-info`)
-  and supply optional CLI arguments. The worker captures stdout/stderr, raises clear errors
-  when the tool exits unexpectedly, and stores the textual output alongside workflow metadata.
+- **Dissect target-info (`run_target_info`)** – single-click runs the standard `target-info`
+  recipe with no additional configuration.
+- **Dissect query (`run_query`)** – choose any Dissect console script (for example
+  `target-query`, `target-dd`, `target-shell`) and provide optional CLI arguments. The worker
+  captures stdout/stderr, raises clear errors when the tool exits
+  unexpectedly, and stores the textual output alongside workflow metadata.
 - **Target-query bundle (`run_target_query_bundle`)** – one click runs a curated series of
   `target-query` presets (`mft_timeline`, `evtx`, `shimcache`, `amcache`, `jumplist`). Each
   preset is piped through `rdump -C --multi-timestamp` so you receive CSV files automatically.

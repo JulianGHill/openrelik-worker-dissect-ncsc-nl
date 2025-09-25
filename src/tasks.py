@@ -27,14 +27,14 @@ TASK_NAME = "openrelik-worker-dissect-ncsc-nl.tasks.run_query"
 # Task metadata for registration in the core system.
 TASK_METADATA = {
     "display_name": "Dissect query runner",
-    "description": "Execute a Dissect recipe (for example `target-info`) against forensic disk images and capture the textual result.",
+    "description": "Execute any Dissect console script (for example `target-info`) against forensic disk images and capture the textual result.",
     "task_config": [
         {
             "name": "query",
             "label": "Dissect tool",
-            "description": "Name of the Dissect console script to execute (defaults to target-info).",
+            "description": "Name of the Dissect console script to execute (required, e.g. target-info, target-query, target-dd).",
             "type": "text",
-            "required": False,
+            "required": True,
         },
         {
             "name": "arguments",
@@ -187,7 +187,9 @@ def _run_query(
         raise RuntimeError("Output path is required for Dissect results")
 
     config = task_config or {}
-    query_name = (config.get("query") or DEFAULT_QUERY).strip() or DEFAULT_QUERY
+    query_name = (config.get("query") or "").strip()
+    if not query_name:
+        raise RuntimeError("No Dissect console script provided. Please specify a query to run.")
     argument_tokens = _parse_argument_string(config.get("arguments"))
 
     logger.debug(

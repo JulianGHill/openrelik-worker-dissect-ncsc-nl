@@ -108,10 +108,26 @@ def test_run_query_failure(monkeypatch, tmp_output):
             input_files=None,
             output_path=str(tmp_output),
             workflow_id="wf-123",
-            task_config={},
+            task_config={"query": "target-info"},
         )
 
     assert "boom" in str(exc.value)
 
     # File should not contain partial output on failure
     assert not tmp_output.joinpath(fake_output.display_name).exists()
+
+
+def test_run_query_requires_query(monkeypatch, tmp_output):
+    monkeypatch.setattr(tasks, "get_input_files", lambda pipe_result, files, filter=None: [])
+
+    with pytest.raises(RuntimeError) as exc:
+        tasks._run_query(
+            DummyTask(),
+            pipe_result=None,
+            input_files=None,
+            output_path=str(tmp_output),
+            workflow_id="wf-000",
+            task_config={},
+        )
+
+    assert "No Dissect console script provided" in str(exc.value)
