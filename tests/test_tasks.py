@@ -1,12 +1,117 @@
-"""Tests tasks."""
+"""Unit tests for the Dissect Celery task."""
 
-# Note: Use pytest for writing tests!
+from __future__ import annotations
+
 import pytest
 
-# from src.tasks import command
+from src import tasks
 
-def test_task_command():
-    """Test command task."""
 
-    ret = "some dummy return value"
-    assert isinstance(ret,str)
+class DummyTask:
+    """Minimal Celery-like task used for unit testing."""
+
+    def __init__(self):
+        self.events = []
+
+    def send_event(self, event, data=None):  # pragma: no cover - trivial forwarding
+        self.events.append((event, data))
+
+
+@pytest.fixture(autouse=True)
+def reset_defaults(monkeypatch):
+    """Ensure environment derived defaults are stable in tests."""
+
+    monkeypatch.setattr(tasks, "DEFAULT_QUERY", "target-info")
+
+
+@pytest.fixture
+def tmp_output(tmp_path):
+    return tmp_path
+
+
+def make_output_file(tmp_path, name="result.txt"):
+    class _OutputFile:
+        def __init__(self, file_path):
+            self.path = str(file_path)
+            self.display_name = file_path.name
+
+        def to_dict(self):
+            return {"path": self.path, "display_name": self.display_name}
+
+    return _OutputFile(tmp_path / name)
+
+
+def test_run_query_success(monkeypatch, tmp_output):
+    input_file = {"path": "/cases/disk.E01", "display_name": "disk.E01"}
+
+    monkeypatch.setattr(tasks, "get_input_files", lambda pipe_result, files, filter=None: [input_file])
+
+    fake_output = make_output_file(tmp_output, "disk-target-info.txt")
+    monkeypatch.setattr(tasks, "create_output_file", lambda *args, **kwargs: fake_output)
+
+    captured_invocations = []
+
+    def fake_invoke(script, args):
+        captured_invocations.append((script, args))
+        return 0, "analysis", ""
+
+    monkeypatch.setattr(tasks, "_invoke_query", fake_invoke)
+
+    result_payload = {}
+
+    def fake_create_task_result(**kwargs):
+        result_payload.update(kwargs)
+        return "encoded-result"
+
+    monkeypatch.setattr(tasks, "create_task_result", fake_create_task_result)
+
+    dummy_task = DummyTask()
+    return_value = tasks._run_query(
+        dummy_task,
+        pipe_result=None,
+        input_files=None,
+        output_path=str(tmp_output),
+        workflow_id="wf-123",
+        task_config={
+            "query": "target-info",
+            "arguments": "--flag value",
+        },
+    )
+
+    assert return_value == "encoded-result"
+    assert captured_invocations == [("target-info", ["--flag", "value", "/cases/disk.E01"])]
+
+    with open(fake_output.path, "r", encoding="utf-8") as handle:
+        assert handle.read() == "analysis"
+
+    assert result_payload["workflow_id"] == "wf-123"
+    assert result_payload["command"] == "target-info --flag value"
+    assert result_payload["meta"]["query"] == "target-info"
+    assert result_payload["meta"]["arguments"] == ["--flag", "value"]
+    assert result_payload["output_files"] == [fake_output.to_dict()]
+
+
+def test_run_query_failure(monkeypatch, tmp_output):
+    input_file = {"path": "/cases/disk.E01", "display_name": "disk.E01"}
+
+    monkeypatch.setattr(tasks, "get_input_files", lambda pipe_result, files, filter=None: [input_file])
+
+    fake_output = make_output_file(tmp_output, "disk-target-info.txt")
+    monkeypatch.setattr(tasks, "create_output_file", lambda *args, **kwargs: fake_output)
+
+    monkeypatch.setattr(tasks, "_invoke_query", lambda script, args: (1, "", "boom"))
+
+    with pytest.raises(RuntimeError) as exc:
+        tasks._run_query(
+            DummyTask(),
+            pipe_result=None,
+            input_files=None,
+            output_path=str(tmp_output),
+            workflow_id="wf-123",
+            task_config={},
+        )
+
+    assert "boom" in str(exc.value)
+
+    # File should not contain partial output on failure
+    assert not tmp_output.joinpath(fake_output.display_name).exists()

@@ -1,49 +1,61 @@
-<!--
-README for the OpenRelik Worker Template
-test
+# OpenRelik worker for Dissect (NCSC-NL)
 
-This file provides instructions on how to use this template to create a new OpenRelik worker.
-The placeholder `TEMPLATEWORKERNAME` needs to be replaced with the actual name of your worker.
-The `bootstrap.sh` script is designed to help with this process.
--->
+This worker wraps the [Fox-IT Dissect](https://github.com/fox-it/dissect) tooling that powers
+some IR playbooks. It loads disk images provided by OpenRelik,
+executes the requested Dissect recipes, and writes the resulting artefacts back into the
+workflow for download or further automation.
 
-1.  **Bootstrap your new worker:**
-    Run the `bash bootstrap.sh` script located in the root of this template. This script will guide you through renaming `TEMPLATEWORKERNAME` to your chosen worker name throughout the project files (e.g., directory names, Python files, etc.).
-2.  **Update this README:**
-    After bootstrapping, manually replace all remaining instances of `TEMPLATEWORKERNAME` in this `README.md` file with your actual worker name. Also, fill in the description section below.
-3.  **Write Tests:**
-    Before or alongside developing your worker's core logic, start creating tests.
-    *   **Unit Tests:** Create unit tests for individual functions and classes within your worker's `src` directory. Place these in the `tests/` directory.
-    *   Refer to the "Test" section below for instructions on how to run your tests.
-4.  **Implement Worker Logic:**
-    Fill in the `src/tasks.py` file (and any other necessary modules) with the core functionality of your worker.
-5.  **Add LICENSE file:**
-    Add a License file to the repository.
+## What you can run from the OpenRelik UI
 
-# Openrelik worker TEMPLATEWORKERNAME
-## Description
-**TODO:** Enter a comprehensive description of your worker here. Explain its purpose, what kind of tasks it handles, and any specific functionalities or integrations it provides.
+- **Dissect query (`run_query`)** – pick any Dissect console script (defaults to `target-info`)
+  and supply optional CLI arguments. The worker captures stdout/stderr, raises clear errors
+  when the tool exits unexpectedly, and stores the textual output alongside workflow metadata.
+- **Target-query bundle (`run_target_query_bundle`)** – one click runs a curated series of
+  `target-query` presets (`mft_timeline`, `evtx`, `shimcache`, `amcache`, `jumplist`). Each
+  preset is piped through `rdump -C --multi-timestamp` so you receive CSV files automatically.
 
-## Deploy
-Add the below configuration to the OpenRelik docker-compose.yml file.
+Both options appear as separate tasks inside OpenRelik, so analysts can choose simple
+ad-hoc queries or a richer triage bundle without leaving the UI.
+
+## Installation instructions
+
+Add the worker to your OpenRelik `docker-compose` stack:
 
 ```
-openrelik-worker-TEMPLATEWORKERNAME:
-    container_name: openrelik-worker-TEMPLATEWORKERNAME
-    image: ghcr.io/openrelik/openrelik-worker-TEMPLATEWORKERNAME:latest
+  openrelik-worker-dissect-ncsc-nl:
+    container_name: openrelik-worker-dissect-ncsc-nl
+    image: ghcr.io/julianghill/openrelik-worker-dissect-ncsc-nl:latest
     restart: always
     environment:
       - REDIS_URL=redis://openrelik-redis:6379
       - OPENRELIK_PYDEBUG=0
     volumes:
       - ./data:/usr/share/openrelik/data
-    command: "celery --app=src.app worker --task-events --concurrency=4 --loglevel=INFO -Q openrelik-worker-TEMPLATEWORKERNAME"
-    # ports:
-      # - 5678:5678 # For debugging purposes.
+    command: "celery --app=src.app worker --task-events --concurrency=4 --loglevel=INFO -Q openrelik-worker-dissect-ncsc-nl"
 ```
 
-## Test
+## Local development
+
 ```
 uv sync --group test
 uv run pytest -s --cov=.
 ```
+
+To run the worker locally with Redis available:
+
+```
+REDIS_URL=redis://localhost:6379/0 \
+uv run celery --app=src.app worker --task-events --concurrency=1 --loglevel=INFO
+```
+
+## Notes
+
+- Dissect and its plugin ecosystem are installed from PyPI when the worker image is built.
+- Ensure the host provides the filesystem libraries Dissect needs to mount your evidence
+  (for example `libewf`, `libguestfs-tools`) if you operate outside Docker.
+- The preset list for the bundle lives in `src/target_query_bundle.py` (`TARGET_QUERY_BUNDLE`).
+  Tweak that list to add new `target-query -f` arguments or rename the generated CSV files.
+
+##### Obligatory Fine Print
+This is not an official product of Fox-IT, NCSC-NL, or any commercial entity. It is
+community code packaged for OpenRelik.

@@ -2,11 +2,11 @@
 publish: false
 
 # Worker Metadata. This section is required.
-display_name: User-friendly name of your worker
-description: Brief description of your workers purpose and functionality.
+display_name: Dissect (NCSC-NL) query runner
+description: Run Fox-IT's Dissect recipes (for example `target-info`) on forensic disk images and collect the textual results, including a bundled set of target-query presets rendered as CSV.
 
 # Optional: Third-Party Tools Used by the Worker.
 tools:
-  - display_name: User-friendly name of the tool
-    description: Brief description of the tool
-    url: http://example.com # URL for more info about the tool
+  - display_name: Dissect
+    description: Modular forensic framework by Fox-IT for analysing disk images, memory captures, and more.
+    url: https://github.com/fox-it/dissect

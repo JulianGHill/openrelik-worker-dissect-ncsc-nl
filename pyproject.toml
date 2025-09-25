@@ -1,16 +1,17 @@
 [project]
-authors = [
-    {name = "YOUR NAME", email = "email@example.com"},
-]
+name = "openrelik-worker-dissect-ncsc-nl"
+version = "0.1.0"
+description = "Execute Dissect CLI recipes (like target-info) against disk images inside OpenRelik."
+readme = "README.md"
 requires-python = "<4.0,>=3.11"
+authors = [
+    {name = "OpenRelik Contributors"},
+]
 dependencies = [
     "celery[redis]<6.0.0,>=5.4.0",
+    "dissect<4.0.0,>=3.0.0",
     "openrelik-worker-common<1.0.0,>=0.16.0",
 ]
-name = "openrelik-worker-TEMPLATE-WORKER-NAME"
-version = "0.1.0"
-description = "Description of the worker"
-readme = "README.md"
 
 [dependency-groups]
 test = [
