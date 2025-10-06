@@ -83,6 +83,9 @@ uv run celery --app=src.app worker --task-events --concurrency=1 --loglevel=INFO
 - Provide a custom rule in the `yara_rule` textarea to run `target-query -f yara` alongside the
   selected presets. Leaving the field blank skips the scan. When populated, the bundle appends a
   `*-yara.csv` file for each matching target input.
+- Prefer to reuse existing rule files? Supply a comma or newline separated list of rule paths or
+  directories in the `yara_rule_paths` field. You can combine both inputs—the inline rule is written
+  to a temporary file and passed along with any directories you provide.
 
 ##### Obligatory Fine Print
 This is not an official product of Fox-IT, NCSC-NL, or any commercial entity. It is

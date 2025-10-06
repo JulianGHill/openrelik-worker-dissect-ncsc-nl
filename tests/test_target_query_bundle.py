@@ -621,7 +621,7 @@ def test_yara_rule_executes_when_provided(monkeypatch, tmp_path):
 
     captured_result = {}
 
-    def fake_create_task_result(**kwargs):
+def fake_create_task_result(**kwargs):
         captured_result.update(kwargs)
         return "bundle-result"
 
@@ -705,3 +705,145 @@ def test_yara_only_runs_when_scope_selection_empty(monkeypatch, tmp_path, scopes
     assert captured_result["meta"]["presets"] == ["Yara (custom rule)"]
     assert captured_result["meta"]["selection"] == []
     assert captured_result["meta"]["selection_label"] == []
+
+
+def test_yara_rule_paths_execute_when_provided(monkeypatch, tmp_path):
+    input_file = {"path": "/cases/disk.E01", "display_name": "disk.E01"}
+    monkeypatch.setattr(bundle, "get_input_files", lambda pipe_result, files: [input_file])
+
+    monkeypatch.setattr(bundle, "TARGET_QUERY_BUNDLE", [])
+
+    class _Match:
+        def __init__(self, name):
+            self.name = name
+
+    def fake_find_functions(function_name):
+        return ([_Match(function_name)], None)
+
+    monkeypatch.setattr(bundle, "find_functions", fake_find_functions)
+    bundle._plugin_available.cache_clear()
+
+    def fake_create_output_file(output_path, display_name, extension, data_type):
+        return _make_output_file(tmp_path, f"{display_name}.{extension}")
+
+    monkeypatch.setattr(bundle, "create_output_file", fake_create_output_file)
+
+    target_query_calls = []
+
+    def fake_invoke(script, args, stdin_data=None, decode_stdout=True):
+        if script == "target-query":
+            target_query_calls.append(list(args))
+            assert "-r" in args
+            idx = args.index("-r")
+            assert args[idx + 1 :] == ["/rules/all"]
+            return 0, b"yara-results", b""
+        if script == "rdump":
+            return 0, "csv", ""
+        raise AssertionError("unexpected script")
+
+    monkeypatch.setattr(bundle, "invoke_console_script", fake_invoke)
+
+    captured_result = {}
+
+    def fake_create_task_result(**kwargs):
+        captured_result.update(kwargs)
+        return "bundle-result"
+
+    monkeypatch.setattr(bundle, "create_task_result", fake_create_task_result)
+
+    bundle._run_bundle(
+        DummyTask(),
+        pipe_result=None,
+        input_files=None,
+        output_path=str(tmp_path),
+        workflow_id="wf-561",
+        task_config={
+            "bundle_scopes": [],
+            "yara_rule_paths": "/rules/all",
+        },
+    )
+
+    assert len(target_query_calls) == 1
+    assert captured_result["meta"]["presets"] == ["Yara (custom rule)"]
+    assert captured_result["meta"]["selection"] == []
+    assert captured_result["meta"]["selection_label"] == []
+
+
+def test_yara_rule_inline_and_paths(monkeypatch, tmp_path):
+    input_file = {"path": "/cases/disk.E01", "display_name": "disk.E01"}
+    monkeypatch.setattr(bundle, "get_input_files", lambda pipe_result, files: [input_file])
+
+    presets = [
+        {
+            "name": "All event logs",
+            "arguments": ["-f", "evtx"],
+            "output_suffix": "evtx",
+            "categories": [bundle.CATEGORY_ALL_EVENT_LOGS],
+        },
+    ]
+    monkeypatch.setattr(bundle, "TARGET_QUERY_BUNDLE", presets)
+
+    class _Match:
+        def __init__(self, name):
+            self.name = name
+
+    def fake_find_functions(function_name):
+        return ([_Match(function_name)], None)
+
+    monkeypatch.setattr(bundle, "find_functions", fake_find_functions)
+    bundle._plugin_available.cache_clear()
+
+    outputs = {}
+
+    def fake_create_output_file(output_path, display_name, extension, data_type):
+        file_obj = _make_output_file(tmp_path, f"{display_name}.{extension}")
+        outputs.setdefault(display_name, []).append(file_obj)
+        return file_obj
+
+    monkeypatch.setattr(bundle, "create_output_file", fake_create_output_file)
+
+    target_query_calls = []
+
+    def fake_invoke(script, args, stdin_data=None, decode_stdout=True):
+        if script == "target-query" and "yara" in args:
+            target_query_calls.append(list(args))
+            idx = args.index("-r")
+            yara_args = args[idx + 1 :]
+            assert len(yara_args) == 2
+            assert yara_args[1] == "/rules/dir"
+            assert yara_args[0].endswith(".yar")
+            return 0, "yara-results", ""
+        if script == "target-query":
+            target_query_calls.append(list(args))
+            return 0, b"records", b""
+        if script == "rdump":
+            return 0, "csv", ""
+        raise AssertionError("unexpected script")
+
+    monkeypatch.setattr(bundle, "invoke_console_script", fake_invoke)
+
+    captured_result = {}
+
+    def fake_create_task_result(**kwargs):
+        captured_result.update(kwargs)
+        return "bundle-result"
+
+    monkeypatch.setattr(bundle, "create_task_result", fake_create_task_result)
+
+    bundle._run_bundle(
+        DummyTask(),
+        pipe_result=None,
+        input_files=None,
+        output_path=str(tmp_path),
+        workflow_id="wf-562",
+        task_config={
+            "bundle_scopes": [bundle.CATEGORY_ALL_EVENT_LOGS],
+            "yara_rule": "rule r { strings: $a = \"test\" condition: $a }",
+            "yara_rule_paths": ["/rules/dir"],
+        },
+    )
+
+    yara_calls = [call for call in target_query_calls if "yara" in call]
+    assert len(yara_calls) == 1
+    assert "All event logs" in captured_result["meta"]["presets"]
+    assert "Yara (custom rule)" in captured_result["meta"]["presets"]

@@ -5,6 +5,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 from typing import Iterable
+import re
 import tempfile
 
 from celery import signals
@@ -72,6 +73,16 @@ TASK_METADATA = {
             "name": "yara_rule",
             "label": "Custom Yara rule",
             "description": "Optional Yara rule contents applied to each input. Leave empty to skip running Yara.",
+            "type": "textarea",
+            "required": False,
+        },
+        {
+            "name": "yara_rule_paths",
+            "label": "Yara rule directories/files",
+            "description": (
+                "Optional path(s) to existing Yara rule files or directories. Provide multiple entries "
+                "comma or newline separated."
+            ),
             "type": "textarea",
             "required": False,
         },
@@ -392,6 +403,34 @@ def _normalise_scopes(raw_scopes, *, default_to_everything: bool = True) -> list
     return normalised
 
 
+def _normalise_yara_rule_paths(raw_paths) -> list[str]:
+    if raw_paths is None:
+        return []
+
+    if isinstance(raw_paths, (list, tuple, set)):
+        raw_items = list(raw_paths)
+    else:
+        raw_items = [raw_paths]
+
+    normalised: list[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        if item is None:
+            continue
+        text = str(item).strip()
+        if not text:
+            continue
+        segments = re.split(r"[\n,]", text)
+        for segment in segments:
+            cleaned = segment.strip()
+            if not cleaned or cleaned in seen:
+                continue
+            seen.add(cleaned)
+            normalised.append(cleaned)
+
+    return normalised
+
+
 def _resolve_presets_for_scope(scope: str) -> list[dict]:
     if scope == CATEGORY_EVERYTHING:
         return list(TARGET_QUERY_BUNDLE)
@@ -469,6 +508,7 @@ def _run_bundle(
     if not scopes and "bundle_scopes" not in config and "bundle_scope" not in config:
         scopes = [CATEGORY_EVERYTHING]
     yara_rule = (config.get("yara_rule") or "").strip()
+    yara_rule_paths = _normalise_yara_rule_paths(config.get("yara_rule_paths"))
 
     if CATEGORY_EVERYTHING in scopes:
         selected_presets = list(TARGET_QUERY_BUNDLE)
@@ -482,12 +522,12 @@ def _run_bundle(
                     seen_ids.add(key)
                     selected_presets.append(preset)
 
-    if not selected_presets and not yara_rule:
+    if not selected_presets and not (yara_rule or yara_rule_paths):
         raise RuntimeError("No target-query presets match the selected scope")
 
     available_presets, unavailable_presets = _classify_presets(selected_presets)
 
-    if not available_presets and not yara_rule:
+    if not available_presets and not (yara_rule or yara_rule_paths):
         raise RuntimeError("No target-query presets are available on this worker")
 
     for preset, plugin_name in unavailable_presets:
@@ -508,18 +548,26 @@ def _run_bundle(
 
     yara_rule_path: str | None = None
     yara_plugin_available = False
+    yara_arguments: list[str] = []
+
     if yara_rule:
+        with tempfile.NamedTemporaryFile("w", suffix=".yar", delete=False) as rule_handle:
+            rule_handle.write(yara_rule)
+            rule_handle.flush()
+            yara_rule_path = rule_handle.name
+        yara_arguments.append(yara_rule_path)
+
+    if yara_rule_paths:
+        yara_arguments.extend(yara_rule_paths)
+
+    if yara_arguments:
         if _plugin_available("yara"):
-            with tempfile.NamedTemporaryFile("w", suffix=".yar", delete=False) as rule_handle:
-                rule_handle.write(yara_rule)
-                rule_handle.flush()
-                yara_rule_path = rule_handle.name
             yara_plugin_available = True
             available_presets.append(
                 (
                     {
                         "name": "Yara (custom rule)",
-                        "arguments": ["-f", "yara", "-r", yara_rule_path],
+                        "arguments": ["-f", "yara", "-r", *yara_arguments],
                         "output_suffix": "yara",
                         "rdump_args": RDUMP_ARGS,
                         "categories": [],
