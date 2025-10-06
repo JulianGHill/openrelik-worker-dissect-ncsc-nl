@@ -11,6 +11,7 @@ dependencies = [
     "celery[redis]<6.0.0,>=5.4.0",
     "dissect<4.0.0,>=3.0.0",
     "openrelik-worker-common<1.0.0,>=0.16.0",
+    "yara-python<5.0.0,>=4.3.0",
 ]
 
 [dependency-groups]
