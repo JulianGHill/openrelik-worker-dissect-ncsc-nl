@@ -34,7 +34,7 @@ def set_bundle(monkeypatch):
     presets = [
         {
             "name": "mft_timeline",
-            "arguments": ["-f", "mft_timeline"],
+            "arguments": ["-f", "mft.records"],
             "output_suffix": "mft",
             "categories": [bundle.CATEGORY_APPLICATION_EXECUTION],
         },
@@ -106,7 +106,7 @@ def test_bundle_success(monkeypatch, tmp_path):
     assert captured_result["meta"]["presets"] == ["mft_timeline", "evtx"]
     assert captured_result["meta"]["skipped_presets"] == []
     assert {meta["preset"] for meta in captured_result["meta"]["results"]} == {"mft_timeline", "evtx"}
-    assert {meta["plugin"] for meta in captured_result["meta"]["results"]} == {"mft_timeline", "evtx"}
+    assert {meta["plugin"] for meta in captured_result["meta"]["results"]} == {"mft.records", "evtx"}
     assert captured_result["meta"]["selection"] == [bundle.CATEGORY_EVERYTHING]
     assert (
         captured_result["meta"]["selection_label"]
@@ -343,7 +343,7 @@ def test_bundle_scope_mft_timeline(monkeypatch, tmp_path):
     presets = [
         {
             "name": "Generate a MFT Timeline",
-            "arguments": ["-f", "mft_timeline"],
+            "arguments": ["-f", "mft.records"],
             "output_suffix": "mft_timeline",
             "categories": [bundle.CATEGORY_MFT_TIMELINE],
         },
@@ -389,6 +389,7 @@ def test_bundle_scope_mft_timeline(monkeypatch, tmp_path):
         captured_result["meta"]["selection_label"]
         == [bundle.SCOPE_VALUE_TO_LABEL[bundle.CATEGORY_MFT_TIMELINE]]
     )
+
 
 
 def test_bundle_scope_deleted_items(monkeypatch, tmp_path):

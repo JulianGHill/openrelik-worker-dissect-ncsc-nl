@@ -103,7 +103,7 @@ TARGET_QUERY_BUNDLE = [
     },
     {
         "name": "Generate a MFT Timeline",
-        "arguments": ["-f", "mft_timeline"],
+        "arguments": ["-f", "mft.records"],
         "output_suffix": "mft_timeline",
         "categories": [CATEGORY_MFT_TIMELINE],
     },

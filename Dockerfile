@@ -8,7 +8,18 @@ RUN echo 'debconf debconf/frontend select Noninteractive' | debconf-set-selectio
 # Install poetry and any other dependency that your worker needs.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
-    # Add your dependencies here
+    ca-certificates \
+    build-essential \
+    pkg-config \
+    libssl-dev \
+    libffi-dev \
+    flex \
+    bison \
+    libmagic-dev \
+    python3-dev \
+    yara \
+    libyara-dev \
+    # Add other dependencies above this line
     && rm -rf /var/lib/apt/lists/*
 
 # Configure debugging
