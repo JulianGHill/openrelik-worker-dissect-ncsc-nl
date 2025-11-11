@@ -54,7 +54,8 @@ def test_run_query_success(monkeypatch, tmp_output):
 
     captured_invocations = []
 
-    def fake_invoke(script, args):
+    def fake_invoke(script, args, decode_stdout=True):
+        assert decode_stdout is True
         captured_invocations.append((script, args))
         return 0, "analysis", ""
 
@@ -112,7 +113,8 @@ def test_run_query_extracts_zip_inputs(monkeypatch, tmp_output, tmp_path):
 
     captured_invocations = []
 
-    def fake_invoke(script, args):
+    def fake_invoke(script, args, decode_stdout=True):
+        assert decode_stdout is True
         extracted_path = Path(args[-1])
         assert extracted_path.name == "TestCollect"
         assert extracted_path.joinpath("disk.E01").exists()
@@ -136,6 +138,64 @@ def test_run_query_extracts_zip_inputs(monkeypatch, tmp_output, tmp_path):
     assert captured_invocations[0][1][-1].endswith("TestCollect")
 
 
+def test_run_query_target_query_runs_rdump(monkeypatch, tmp_output):
+    input_file = {"path": "/cases/disk.E01", "display_name": "disk.E01"}
+
+    monkeypatch.setattr(tasks, "get_input_files", lambda pipe_result, files, filter=None: [input_file])
+
+    fake_output = make_output_file(tmp_output, "disk-target-query.csv")
+
+    def fake_create_output_file(*args, **kwargs):
+        assert kwargs["extension"] == "csv"
+        assert kwargs["data_type"] == tasks.TARGET_QUERY_RESULT_TYPE
+        return fake_output
+
+    monkeypatch.setattr(tasks, "create_output_file", fake_create_output_file)
+
+    captured_queries = []
+
+    def fake_invoke_query(script, args, decode_stdout=True):
+        captured_queries.append({"script": script, "args": args, "decode": decode_stdout})
+        return 0, b"record-data", ""
+
+    monkeypatch.setattr(tasks, "_invoke_query", fake_invoke_query)
+
+    rdump_calls = []
+
+    def fake_invoke_console(script, args, stdin_data=None, decode_stdout=True):
+        assert script == "rdump"
+        rdump_calls.append({"args": args, "stdin": stdin_data, "decode": decode_stdout})
+        return 0, "csv-output", ""
+
+    monkeypatch.setattr(tasks, "invoke_console_script", fake_invoke_console)
+
+    result_payload = {}
+
+    def fake_create_task_result(**kwargs):
+        result_payload["result"] = kwargs
+        return "ok"
+
+    monkeypatch.setattr(tasks, "create_task_result", fake_create_task_result)
+
+    return_value = tasks._run_query(
+        DummyTask(),
+        pipe_result=None,
+        input_files=None,
+        output_path=str(tmp_output),
+        workflow_id="wf-target-query",
+        task_config={"query": "target-query"},
+    )
+
+    assert return_value == "ok"
+    assert captured_queries[0]["decode"] is False
+    assert rdump_calls[0]["stdin"] == b"record-data"
+
+    with open(fake_output.path, "r", encoding="utf-8") as handle:
+        assert handle.read() == "csv-output"
+
+    meta_entry = result_payload["result"]["meta"]["results"][0]
+    assert meta_entry["rdump_command"].startswith("rdump ")
+    assert meta_entry["stderr"] == ""
 def test_run_query_failure(monkeypatch, tmp_output):
     input_file = {"path": "/cases/disk.E01", "display_name": "disk.E01"}
 
@@ -144,7 +204,7 @@ def test_run_query_failure(monkeypatch, tmp_output):
     fake_output = make_output_file(tmp_output, "disk-target-info.txt")
     monkeypatch.setattr(tasks, "create_output_file", lambda *args, **kwargs: fake_output)
 
-    monkeypatch.setattr(tasks, "_invoke_query", lambda script, args: (1, "", "boom"))
+    monkeypatch.setattr(tasks, "_invoke_query", lambda script, args, decode_stdout=True: (1, "", "boom"))
 
     with pytest.raises(RuntimeError) as exc:
         tasks._run_query(

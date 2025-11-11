@@ -49,6 +49,9 @@ TASK_METADATA = {
 }
 
 DEFAULT_QUERY = "target-info"
+DEFAULT_RESULT_TYPE = "openrelik:dissect:query-result"
+TARGET_QUERY_RESULT_TYPE = "openrelik:dissect:target-query"
+TARGET_QUERY_RDUMP_ARGS = ["-C", "--multi-timestamp"]
 
 log_root = Logger()
 logger = log_root.get_logger(__name__, get_task_logger(__name__))
@@ -211,10 +214,12 @@ def invoke_console_script(
     return exit_code, stdout_result, stderr_result
 
 
-def _invoke_query(script: str, args: list[str]) -> tuple[int, str, str]:
+def _invoke_query(
+    script: str, args: list[str], *, decode_stdout: bool = True
+) -> tuple[int, str | bytes, str | bytes]:
     """Execute a Dissect console script inside the current interpreter."""
 
-    return invoke_console_script(script, args)
+    return invoke_console_script(script, args, decode_stdout=decode_stdout)
 
 
 def send_progress(task) -> None:
@@ -261,6 +266,8 @@ def _run_query(
     output_files = []
     per_file_meta = []
 
+    should_rdump = query_name == "target-query"
+
     for entry in resolved_inputs:
         source_path = entry.get("path")
         if not source_path:
@@ -269,11 +276,13 @@ def _run_query(
 
         display_name = entry.get("display_name") or Path(source_path).name
         output_display_name = f"{Path(display_name).stem}-{query_name}"
+        file_extension = "csv" if should_rdump else "txt"
+        result_data_type = TARGET_QUERY_RESULT_TYPE if should_rdump else DEFAULT_RESULT_TYPE
         output_file = create_output_file(
             output_path,
             display_name=output_display_name,
-            extension="txt",
-            data_type="openrelik:dissect:query-result",
+            extension=file_extension,
+            data_type=result_data_type,
         )
 
         with materialize_target_path(source_path) as prepared_source_path:
@@ -284,9 +293,17 @@ def _run_query(
                 extra={"command": command_str, "source": prepared_source_path, "output": output_file.path},
             )
 
-            exit_code, stdout, stderr = _invoke_query(query_name, argument_tokens + [prepared_source_path])
+            exit_code, stdout, stderr = _invoke_query(
+                query_name,
+                argument_tokens + [prepared_source_path],
+                decode_stdout=not should_rdump,
+            )
 
             send_progress(task)
+
+            stderr_text = (
+                stderr.decode("utf-8", errors="replace") if isinstance(stderr, (bytes, bytearray)) else stderr
+            )
 
             if exit_code != 0:
                 logger.error(
@@ -294,32 +311,62 @@ def _run_query(
                     extra={
                         "command": command_str,
                         "exit_code": exit_code,
-                        "stderr": stderr,
+                        "stderr": stderr_text,
                     },
                 )
                 raise RuntimeError(
-                    stderr.strip()
+                    stderr_text.strip()
                     or f"Dissect tool '{query_name}' failed for {display_name} with exit code {exit_code}"
                 )
 
-            with open(output_file.path, "w", encoding="utf-8") as handle:
-                handle.write(stdout)
+            file_contents = stdout
+            rdump_command: str | None = None
+            rdump_stderr_text = ""
 
-            if stderr.strip():
+            if should_rdump:
+                rdump_exit, rdump_stdout, rdump_stderr = invoke_console_script(
+                    "rdump",
+                    TARGET_QUERY_RDUMP_ARGS,
+                    stdin_data=stdout,
+                )
+
+                if rdump_exit != 0:
+                    logger.error(
+                        "rdump conversion failed",
+                        extra={
+                            "command": quote_command(["rdump", *TARGET_QUERY_RDUMP_ARGS]),
+                            "exit_code": rdump_exit,
+                            "stderr": rdump_stderr,
+                        },
+                    )
+                    raise RuntimeError(
+                        rdump_stderr.strip() or "rdump failed while converting target-query output to CSV"
+                    )
+
+                file_contents = rdump_stdout
+                rdump_command = quote_command(["rdump", *TARGET_QUERY_RDUMP_ARGS])
+                rdump_stderr_text = rdump_stderr.strip()
+
+            with open(output_file.path, "w", encoding="utf-8") as handle:
+                handle.write(file_contents if isinstance(file_contents, str) else str(file_contents))
+
+            if stderr_text.strip():
                 logger.warning(
                     "Dissect tool reported warnings",
-                    extra={"command": command_str, "stderr": stderr},
+                    extra={"command": command_str, "stderr": stderr_text},
                 )
 
             output_files.append(output_file.to_dict())
-            per_file_meta.append(
-                {
-                    "input": display_name,
-                    "output": output_file.display_name if hasattr(output_file, "display_name") else output_display_name,
-                    "command": command_str,
-                    "stderr": stderr.strip(),
-                }
-            )
+            per_file_meta_entry = {
+                "input": display_name,
+                "output": output_file.display_name if hasattr(output_file, "display_name") else output_display_name,
+                "command": command_str,
+                "stderr": stderr_text.strip(),
+            }
+            if rdump_command:
+                per_file_meta_entry["rdump_command"] = rdump_command
+                per_file_meta_entry["rdump_stderr"] = rdump_stderr_text
+            per_file_meta.append(per_file_meta_entry)
 
     if not output_files:
         raise RuntimeError("Dissect did not generate any output")
