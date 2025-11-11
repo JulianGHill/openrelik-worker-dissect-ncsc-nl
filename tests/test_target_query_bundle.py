@@ -622,7 +622,7 @@ def test_yara_rule_executes_when_provided(monkeypatch, tmp_path):
 
     captured_result = {}
 
-def fake_create_task_result(**kwargs):
+    def fake_create_task_result(**kwargs):
         captured_result.update(kwargs)
         return "bundle-result"
 

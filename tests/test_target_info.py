@@ -41,7 +41,10 @@ def test_target_info_runs_with_fixed_arguments(monkeypatch):
 
     monkeypatch.setattr(target_info, "_run_query", fake_run)
 
-    result = target_info.run_target_info(
+    # Celery decorates the task, so call the underlying function directly for testing.
+    run_impl = target_info.run_target_info.run.__func__
+
+    result = run_impl(
         DummyTask(),
         pipe_result="pipe",
         input_files=[{"path": "disk.E01"}],
@@ -54,4 +57,3 @@ def test_target_info_runs_with_fixed_arguments(monkeypatch):
     assert captured["output_path"] == "/tmp/out"
     assert captured["workflow_id"] == "wf-789"
     assert captured["input_files"] == [{"path": "disk.E01"}]
-*** End of tests/test_target_info.py ***
