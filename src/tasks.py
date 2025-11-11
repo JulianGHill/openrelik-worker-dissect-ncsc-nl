@@ -6,6 +6,8 @@ import contextlib
 import io
 import shlex
 import sys
+import tempfile
+import zipfile
 from importlib import import_module
 from importlib.metadata import entry_points
 from pathlib import Path
@@ -50,6 +52,58 @@ DEFAULT_QUERY = "target-info"
 
 log_root = Logger()
 logger = log_root.get_logger(__name__, get_task_logger(__name__))
+
+
+def _list_archive_children(root: Path) -> list[Path]:
+    """Return extracted children ignoring common metadata directories."""
+
+    return [child for child in root.iterdir() if child.name != "__MACOSX"]
+
+
+def _resolve_extracted_root(root: Path) -> Path:
+    """Return the most useful path within an extracted archive."""
+
+    try:
+        children = _list_archive_children(root)
+    except FileNotFoundError:  # pragma: no cover - defensive guard
+        return root
+
+    if len(children) == 1:
+        return children[0]
+
+    return root
+
+
+@contextlib.contextmanager
+def materialize_target_path(source_path: str, *, log=None):
+    """Yield a path that Dissect can open, extracting ZIP archives when needed."""
+
+    path = Path(source_path)
+
+    if path.exists() and path.is_file():
+        try:
+            is_zip = zipfile.is_zipfile(path)
+        except OSError:
+            is_zip = False
+
+        if is_zip:
+            with tempfile.TemporaryDirectory(prefix="dissect-evidence-") as temp_dir:
+                try:
+                    with zipfile.ZipFile(path) as archive:
+                        archive.extractall(temp_dir)
+                except zipfile.BadZipFile as exc:
+                    raise RuntimeError(f"Failed to extract '{source_path}' as a ZIP archive: {exc}") from exc
+
+                extracted_root = _resolve_extracted_root(Path(temp_dir))
+                active_logger = log or logger
+                active_logger.info(
+                    "Extracted ZIP evidence for Dissect",
+                    extra={"source": source_path, "extracted_path": str(extracted_root)},
+                )
+                yield str(extracted_root)
+                return
+
+    yield source_path
 
 
 def _parse_argument_string(argument_string: str | None) -> list[str]:
@@ -222,48 +276,50 @@ def _run_query(
             data_type="openrelik:dissect:query-result",
         )
 
-        command_tokens = [query_name, *argument_tokens, source_path]
-        command_str = quote_command(command_tokens)
-        logger.info(
-            "Executing Dissect tool",
-            extra={"command": command_str, "source": source_path, "output": output_file.path},
-        )
+        with materialize_target_path(source_path) as prepared_source_path:
+            command_tokens = [query_name, *argument_tokens, prepared_source_path]
+            command_str = quote_command(command_tokens)
+            logger.info(
+                "Executing Dissect tool",
+                extra={"command": command_str, "source": prepared_source_path, "output": output_file.path},
+            )
 
-        exit_code, stdout, stderr = _invoke_query(query_name, argument_tokens + [source_path])
+            exit_code, stdout, stderr = _invoke_query(query_name, argument_tokens + [prepared_source_path])
 
-        send_progress(task)
+            send_progress(task)
 
-        if exit_code != 0:
-            logger.error(
-                "Dissect tool failed",
-                extra={
+            if exit_code != 0:
+                logger.error(
+                    "Dissect tool failed",
+                    extra={
+                        "command": command_str,
+                        "exit_code": exit_code,
+                        "stderr": stderr,
+                    },
+                )
+                raise RuntimeError(
+                    stderr.strip()
+                    or f"Dissect tool '{query_name}' failed for {display_name} with exit code {exit_code}"
+                )
+
+            with open(output_file.path, "w", encoding="utf-8") as handle:
+                handle.write(stdout)
+
+            if stderr.strip():
+                logger.warning(
+                    "Dissect tool reported warnings",
+                    extra={"command": command_str, "stderr": stderr},
+                )
+
+            output_files.append(output_file.to_dict())
+            per_file_meta.append(
+                {
+                    "input": display_name,
+                    "output": output_file.display_name if hasattr(output_file, "display_name") else output_display_name,
                     "command": command_str,
-                    "exit_code": exit_code,
-                    "stderr": stderr,
-                },
+                    "stderr": stderr.strip(),
+                }
             )
-            raise RuntimeError(
-                stderr.strip() or f"Dissect tool '{query_name}' failed for {display_name} with exit code {exit_code}"
-            )
-
-        with open(output_file.path, "w", encoding="utf-8") as handle:
-            handle.write(stdout)
-
-        if stderr.strip():
-            logger.warning(
-                "Dissect tool reported warnings",
-                extra={"command": command_str, "stderr": stderr},
-            )
-
-        output_files.append(output_file.to_dict())
-        per_file_meta.append(
-            {
-                "input": display_name,
-                "output": output_file.display_name if hasattr(output_file, "display_name") else output_display_name,
-                "command": command_str,
-                "stderr": stderr.strip(),
-            }
-        )
 
     if not output_files:
         raise RuntimeError("Dissect did not generate any output")

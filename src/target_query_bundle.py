@@ -17,7 +17,7 @@ from openrelik_worker_common.logging import Logger
 from openrelik_worker_common.task_utils import create_task_result, get_input_files
 
 from .app import celery
-from .tasks import invoke_console_script, quote_command, send_progress
+from .tasks import invoke_console_script, materialize_target_path, quote_command, send_progress
 
 TASK_NAME = "openrelik-worker-dissect-ncsc-nl.tasks.run_target_query_bundle"
 
@@ -588,96 +588,97 @@ def _run_bundle(
         display_name = entry.get("display_name") or Path(source_path).name
         base_name = Path(display_name).stem
 
-        for preset, plugin_name in available_presets:
-            command_args = [source_path, *preset["arguments"]]
-            command_display = _bundle_command_display(source_path, preset["arguments"])
-            logger.info("Running target-query", extra={"command": command_display})
+        with materialize_target_path(source_path, log=logger) as prepared_source_path:
+            for preset, plugin_name in available_presets:
+                command_args = [prepared_source_path, *preset["arguments"]]
+                command_display = _bundle_command_display(prepared_source_path, preset["arguments"])
+                logger.info("Running target-query", extra={"command": command_display})
 
-            exit_code, query_stdout, query_stderr = invoke_console_script(
-                "target-query", command_args, decode_stdout=False
-            )
-
-            send_progress(task)
-
-            if exit_code != 0:
-                logger.error(
-                    "target-query preset failed",
-                    extra={
-                        "command": command_display,
-                        "exit_code": exit_code,
-                        "stderr": query_stderr,
-                    },
-                )
-                stderr_text = (
-                    query_stderr.decode("utf-8", errors="replace")
-                    if isinstance(query_stderr, bytes)
-                    else query_stderr
-                )
-                raise RuntimeError(
-                    stderr_text.strip()
-                    or f"target-query preset '{preset['name']}' failed for {display_name}"
+                exit_code, query_stdout, query_stderr = invoke_console_script(
+                    "target-query", command_args, decode_stdout=False
                 )
 
-            rdump_args = preset.get("rdump_args", RDUMP_ARGS)
-            if rdump_args is None:
-                rdump_stdout = (
-                    query_stdout.decode("utf-8", errors="replace")
-                    if isinstance(query_stdout, (bytes, bytearray))
-                    else str(query_stdout)
-                )
-                rdump_stderr = ""
-                rdump_command_display = ""
-                output_extension = preset.get("output_extension", "txt")
-                data_type = preset.get("data_type", "openrelik:dissect:target-query:text")
-            else:
-                rdump_exit, rdump_stdout, rdump_stderr = invoke_console_script(
-                    "rdump",
-                    rdump_args,
-                    stdin_data=query_stdout,
-                )
+                send_progress(task)
 
-                if rdump_exit != 0:
+                if exit_code != 0:
                     logger.error(
-                        "rdump failed",
+                        "target-query preset failed",
                         extra={
-                            "command": quote_command(["rdump", *rdump_args]),
-                            "stderr": rdump_stderr,
+                            "command": command_display,
+                            "exit_code": exit_code,
+                            "stderr": query_stderr,
                         },
                     )
-                    raise RuntimeError(
-                        rdump_stderr.strip() or f"rdump failed for preset '{preset['name']}'"
-                    )
-
-                rdump_command_display = quote_command(["rdump", *rdump_args])
-                output_extension = preset.get("output_extension", "csv")
-                data_type = preset.get("data_type", "openrelik:dissect:target-query:csv")
-
-            output_file = create_output_file(
-                output_path,
-                display_name=f"{base_name}-{preset['output_suffix']}",
-                extension=output_extension,
-                data_type=data_type,
-            )
-
-            with open(output_file.path, "w", encoding="utf-8") as handle:
-                handle.write(rdump_stdout)
-
-            output_files.append(output_file.to_dict())
-            meta_entries.append(
-                {
-                    "input": display_name,
-                    "preset": preset["name"],
-                    "plugin": plugin_name,
-                    "target_query_command": command_display,
-                    "rdump_command": rdump_command_display,
-                    "target_query_stderr": (
+                    stderr_text = (
                         query_stderr.decode("utf-8", errors="replace")
                         if isinstance(query_stderr, bytes)
                         else query_stderr
-                    ).strip(),
-                    "rdump_stderr": rdump_stderr.strip(),
-                }
-            )
+                    )
+                    raise RuntimeError(
+                        stderr_text.strip()
+                        or f"target-query preset '{preset['name']}' failed for {display_name}"
+                    )
+
+                rdump_args = preset.get("rdump_args", RDUMP_ARGS)
+                if rdump_args is None:
+                    rdump_stdout = (
+                        query_stdout.decode("utf-8", errors="replace")
+                        if isinstance(query_stdout, (bytes, bytearray))
+                        else str(query_stdout)
+                    )
+                    rdump_stderr = ""
+                    rdump_command_display = ""
+                    output_extension = preset.get("output_extension", "txt")
+                    data_type = preset.get("data_type", "openrelik:dissect:target-query:text")
+                else:
+                    rdump_exit, rdump_stdout, rdump_stderr = invoke_console_script(
+                        "rdump",
+                        rdump_args,
+                        stdin_data=query_stdout,
+                    )
+
+                    if rdump_exit != 0:
+                        logger.error(
+                            "rdump failed",
+                            extra={
+                                "command": quote_command(["rdump", *rdump_args]),
+                                "stderr": rdump_stderr,
+                            },
+                        )
+                        raise RuntimeError(
+                            rdump_stderr.strip() or f"rdump failed for preset '{preset['name']}'"
+                        )
+
+                    rdump_command_display = quote_command(["rdump", *rdump_args])
+                    output_extension = preset.get("output_extension", "csv")
+                    data_type = preset.get("data_type", "openrelik:dissect:target-query:csv")
+
+                output_file = create_output_file(
+                    output_path,
+                    display_name=f"{base_name}-{preset['output_suffix']}",
+                    extension=output_extension,
+                    data_type=data_type,
+                )
+
+                with open(output_file.path, "w", encoding="utf-8") as handle:
+                    handle.write(rdump_stdout)
+
+                output_files.append(output_file.to_dict())
+                meta_entries.append(
+                    {
+                        "input": display_name,
+                        "preset": preset["name"],
+                        "plugin": plugin_name,
+                        "target_query_command": command_display,
+                        "rdump_command": rdump_command_display,
+                        "target_query_stderr": (
+                            query_stderr.decode("utf-8", errors="replace")
+                            if isinstance(query_stderr, bytes)
+                            else query_stderr
+                        ).strip(),
+                        "rdump_stderr": rdump_stderr.strip(),
+                    }
+                )
 
     if yara_rule_path is not None:
         Path(yara_rule_path).unlink(missing_ok=True)
