@@ -17,7 +17,15 @@ from openrelik_worker_common.logging import Logger
 from openrelik_worker_common.task_utils import create_task_result, get_input_files
 
 from .app import celery
-from .tasks import invoke_console_script, materialize_target_path, quote_command, send_progress
+from .tasks import (
+    _export_records_with_writer,
+    _normalize_writer_uri,
+    _resolve_default_writer,
+    invoke_console_script,
+    materialize_target_path,
+    quote_command,
+    send_progress,
+)
 
 TASK_NAME = "openrelik-worker-dissect-ncsc-nl.tasks.run_target_query_bundle"
 
@@ -84,6 +92,27 @@ TASK_METADATA = {
                 "comma or newline separated."
             ),
             "type": "textarea",
+            "required": False,
+        },
+        {
+            "name": "elastic_writer",
+            "label": "Record writer URI",
+            "description": (
+                "Optional Dissect writer URI (e.g. elastic+http://elastic:9200?index=dissect-records). "
+                "When set, the worker streams record-formatted output for each preset to that writer."
+            ),
+            "type": "text",
+            "required": False,
+        },
+        {
+            "name": "enable_record_writer",
+            "label": "Export to record writer",
+            "description": (
+                "Toggle streaming record-formatted output to the configured writer URI (either supplied above "
+                "or via the DISSECT_ELASTIC_WRITER_URI environment variable)."
+            ),
+            "type": "checkbox",
+            "default": False,
             "required": False,
         },
     ],
@@ -530,6 +559,21 @@ def _run_bundle(
     if not available_presets and not (yara_rule or yara_rule_paths):
         raise RuntimeError("No target-query presets are available on this worker")
 
+    writer_uri_from_config = _normalize_writer_uri(
+        config.get("elastic_writer") or config.get("record_writer")
+    )
+    writer_uri = writer_uri_from_config or _resolve_default_writer()
+    writer_toggle = config.get("enable_record_writer")
+    if writer_toggle is None:
+        writer_enabled = writer_uri_from_config is not None
+    else:
+        writer_enabled = bool(writer_toggle)
+
+    if writer_enabled and not writer_uri:
+        raise RuntimeError(
+            "Record writer export was requested but no writer URI is configured."
+        )
+
     for preset, plugin_name in unavailable_presets:
         logger.warning(
             "Skipping target-query preset because plugin is unavailable",
@@ -619,6 +663,19 @@ def _run_bundle(
                         or f"target-query preset '{preset['name']}' failed for {display_name}"
                     )
 
+                record_bytes: bytes | None = None
+                if writer_enabled and writer_uri:
+                    if isinstance(query_stdout, (bytes, bytearray)):
+                        record_bytes = query_stdout
+                    else:
+                        record_bytes = str(query_stdout).encode("utf-8")
+                    _export_records_with_writer(
+                        record_bytes,
+                        writer_uri,
+                        query_name="target-query",
+                        display_name=display_name,
+                    )
+
                 rdump_args = preset.get("rdump_args", RDUMP_ARGS)
                 if rdump_args is None:
                     rdump_stdout = (
@@ -664,21 +721,22 @@ def _run_bundle(
                     handle.write(rdump_stdout)
 
                 output_files.append(output_file.to_dict())
-                meta_entries.append(
-                    {
-                        "input": display_name,
-                        "preset": preset["name"],
-                        "plugin": plugin_name,
-                        "target_query_command": command_display,
-                        "rdump_command": rdump_command_display,
-                        "target_query_stderr": (
-                            query_stderr.decode("utf-8", errors="replace")
-                            if isinstance(query_stderr, bytes)
-                            else query_stderr
-                        ).strip(),
-                        "rdump_stderr": rdump_stderr.strip(),
-                    }
-                )
+                entry_meta = {
+                    "input": display_name,
+                    "preset": preset["name"],
+                    "plugin": plugin_name,
+                    "target_query_command": command_display,
+                    "rdump_command": rdump_command_display,
+                    "target_query_stderr": (
+                        query_stderr.decode("utf-8", errors="replace")
+                        if isinstance(query_stderr, bytes)
+                        else query_stderr
+                    ).strip(),
+                    "rdump_stderr": rdump_stderr.strip(),
+                }
+                if writer_enabled and writer_uri and record_bytes is not None:
+                    entry_meta["record_writer"] = writer_uri
+                meta_entries.append(entry_meta)
 
     if yara_rule_path is not None:
         Path(yara_rule_path).unlink(missing_ok=True)

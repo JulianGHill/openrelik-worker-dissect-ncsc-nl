@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import os
 import shlex
 import sys
 import tempfile
@@ -45,6 +46,27 @@ TASK_METADATA = {
             "type": "textarea",
             "required": False,
         },
+        {
+            "name": "elastic_writer",
+            "label": "Record writer URI",
+            "description": (
+                "Optional Dissect writer URI (e.g. elastic+http://elastic:9200?index=dissect-records). "
+                "When set, the worker streams record-formatted output for supported queries to that writer."
+            ),
+            "type": "text",
+            "required": False,
+        },
+        {
+            "name": "enable_record_writer",
+            "label": "Export to record writer",
+            "description": (
+                "Toggle streaming record-formatted output to the configured writer URI (either supplied above "
+                "or via the DISSECT_ELASTIC_WRITER_URI environment variable)."
+            ),
+            "type": "checkbox",
+            "default": False,
+            "required": False,
+        },
     ],
 }
 
@@ -55,6 +77,89 @@ TARGET_QUERY_RDUMP_ARGS = ["-C", "--multi-timestamp"]
 
 log_root = Logger()
 logger = log_root.get_logger(__name__, get_task_logger(__name__))
+
+
+def _normalize_writer_uri(value) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _ensure_record_arguments(query_name: str, args: list[str]) -> list[str]:
+    record_args = list(args)
+    if any(flag in record_args for flag in ("-r", "--record")):
+        return record_args
+
+    if query_name == DEFAULT_QUERY:
+        return ["-r", *record_args]
+
+    return record_args
+
+
+def _capture_record_output(
+    query_name: str,
+    argument_tokens: list[str],
+    source_path: str,
+    display_name: str,
+) -> bytes:
+    record_args = _ensure_record_arguments(query_name, argument_tokens)
+    exit_code, stdout, stderr = _invoke_query(
+        query_name,
+        [*record_args, source_path],
+        decode_stdout=False,
+    )
+
+    stderr_text = (
+        stderr.decode("utf-8", errors="replace")
+        if isinstance(stderr, (bytes, bytearray))
+        else str(stderr)
+    )
+
+    if exit_code != 0:
+        raise RuntimeError(
+            stderr_text.strip()
+            or f"Failed to capture record-formatted output for '{display_name}' using query '{query_name}'"
+        )
+
+    return stdout if isinstance(stdout, (bytes, bytearray)) else stdout.encode("utf-8")
+
+
+def _export_records_with_writer(
+    record_bytes: bytes,
+    writer_uri: str,
+    *,
+    query_name: str,
+    display_name: str,
+) -> None:
+    logger.info(
+        "Streaming Dissect records to writer",
+        extra={"writer": writer_uri, "query": query_name, "input": display_name},
+    )
+    rdump_args = ["-w", writer_uri]
+    exit_code, _, rdump_stderr = invoke_console_script(
+        "rdump", rdump_args, stdin_data=record_bytes
+    )
+
+    if exit_code != 0:
+        stderr_text = (
+            rdump_stderr.strip()
+            if isinstance(rdump_stderr, str)
+            else str(rdump_stderr)
+        )
+        raise RuntimeError(
+            stderr_text
+            or f"rdump writer '{writer_uri}' failed while exporting '{display_name}' via query '{query_name}'"
+        )
+
+
+def _resolve_default_writer() -> str | None:
+    """Return an environment configured record writer URI, if present."""
+
+    return _normalize_writer_uri(
+        os.getenv("DISSECT_ELASTIC_WRITER_URI")
+        or os.getenv("DISSECT_RECORD_WRITER_URI")
+    )
 
 
 def _list_archive_children(root: Path) -> list[Path]:
@@ -95,13 +200,18 @@ def materialize_target_path(source_path: str, *, log=None):
                     with zipfile.ZipFile(path) as archive:
                         archive.extractall(temp_dir)
                 except zipfile.BadZipFile as exc:
-                    raise RuntimeError(f"Failed to extract '{source_path}' as a ZIP archive: {exc}") from exc
+                    raise RuntimeError(
+                        f"Failed to extract '{source_path}' as a ZIP archive: {exc}"
+                    ) from exc
 
                 extracted_root = _resolve_extracted_root(Path(temp_dir))
                 active_logger = log or logger
                 active_logger.info(
                     "Extracted ZIP evidence for Dissect",
-                    extra={"source": source_path, "extracted_path": str(extracted_root)},
+                    extra={
+                        "source": source_path,
+                        "extracted_path": str(extracted_root),
+                    },
                 )
                 yield str(extracted_root)
                 return
@@ -179,7 +289,10 @@ def invoke_console_script(
     original_argv = sys.argv
     sys.argv = [script, *args]
     try:
-        with contextlib.redirect_stdout(stdout_capture), contextlib.redirect_stderr(stderr_capture):
+        with (
+            contextlib.redirect_stdout(stdout_capture),
+            contextlib.redirect_stderr(stderr_capture),
+        ):
             if stdin_buffer is not None:
                 sys.stdin = io.TextIOWrapper(stdin_buffer, encoding="utf-8")
             try:
@@ -248,8 +361,34 @@ def _run_query(
     config = task_config or {}
     query_name = (config.get("query") or "").strip()
     if not query_name:
-        raise RuntimeError("No Dissect console script provided. Please specify a query to run.")
+        raise RuntimeError(
+            "No Dissect console script provided. Please specify a query to run."
+        )
     argument_tokens = _parse_argument_string(config.get("arguments"))
+
+    writer_uri_from_config = None
+    for writer_key in ("elastic_writer", "rdump_writer", "record_writer"):
+        writer_uri_from_config = _normalize_writer_uri(config.get(writer_key))
+        if writer_uri_from_config:
+            break
+
+    writer_uri = writer_uri_from_config or _resolve_default_writer()
+
+    writer_toggle = config.get("enable_record_writer")
+    if writer_toggle is None:
+        writer_enabled = writer_uri_from_config is not None
+    else:
+        writer_enabled = bool(writer_toggle)
+
+    if writer_enabled and not writer_uri:
+        raise RuntimeError(
+            "Record writer export was requested but no writer URI is configured."
+        )
+
+    if writer_enabled and query_name not in {DEFAULT_QUERY, "target-query"}:
+        raise RuntimeError(
+            f"Record writer export is currently supported for 'target-info' or 'target-query' but was requested for '{query_name}'."
+        )
 
     logger.debug(
         "Resolved configuration",
@@ -277,7 +416,9 @@ def _run_query(
         display_name = entry.get("display_name") or Path(source_path).name
         output_display_name = f"{Path(display_name).stem}-{query_name}"
         file_extension = "csv" if should_rdump else "txt"
-        result_data_type = TARGET_QUERY_RESULT_TYPE if should_rdump else DEFAULT_RESULT_TYPE
+        result_data_type = (
+            TARGET_QUERY_RESULT_TYPE if should_rdump else DEFAULT_RESULT_TYPE
+        )
         output_file = create_output_file(
             output_path,
             display_name=output_display_name,
@@ -290,7 +431,11 @@ def _run_query(
             command_str = quote_command(command_tokens)
             logger.info(
                 "Executing Dissect tool",
-                extra={"command": command_str, "source": prepared_source_path, "output": output_file.path},
+                extra={
+                    "command": command_str,
+                    "source": prepared_source_path,
+                    "output": output_file.path,
+                },
             )
 
             exit_code, stdout, stderr = _invoke_query(
@@ -302,7 +447,9 @@ def _run_query(
             send_progress(task)
 
             stderr_text = (
-                stderr.decode("utf-8", errors="replace") if isinstance(stderr, (bytes, bytearray)) else stderr
+                stderr.decode("utf-8", errors="replace")
+                if isinstance(stderr, (bytes, bytearray))
+                else stderr
             )
 
             if exit_code != 0:
@@ -322,6 +469,7 @@ def _run_query(
             file_contents = stdout
             rdump_command: str | None = None
             rdump_stderr_text = ""
+            writer_used = False
 
             if should_rdump:
                 rdump_exit, rdump_stdout, rdump_stderr = invoke_console_script(
@@ -334,21 +482,41 @@ def _run_query(
                     logger.error(
                         "rdump conversion failed",
                         extra={
-                            "command": quote_command(["rdump", *TARGET_QUERY_RDUMP_ARGS]),
+                            "command": quote_command(
+                                ["rdump", *TARGET_QUERY_RDUMP_ARGS]
+                            ),
                             "exit_code": rdump_exit,
                             "stderr": rdump_stderr,
                         },
                     )
                     raise RuntimeError(
-                        rdump_stderr.strip() or "rdump failed while converting target-query output to CSV"
+                        rdump_stderr.strip()
+                        or "rdump failed while converting target-query output to CSV"
                     )
 
                 file_contents = rdump_stdout
                 rdump_command = quote_command(["rdump", *TARGET_QUERY_RDUMP_ARGS])
                 rdump_stderr_text = rdump_stderr.strip()
+                if writer_enabled and writer_uri:
+                    record_bytes = (
+                        stdout
+                        if isinstance(stdout, (bytes, bytearray))
+                        else stdout.encode("utf-8")
+                    )
+                    _export_records_with_writer(
+                        record_bytes,
+                        writer_uri,
+                        query_name=query_name,
+                        display_name=display_name,
+                    )
+                    writer_used = True
 
             with open(output_file.path, "w", encoding="utf-8") as handle:
-                handle.write(file_contents if isinstance(file_contents, str) else str(file_contents))
+                handle.write(
+                    file_contents
+                    if isinstance(file_contents, str)
+                    else str(file_contents)
+                )
 
             if stderr_text.strip():
                 logger.warning(
@@ -359,13 +527,33 @@ def _run_query(
             output_files.append(output_file.to_dict())
             per_file_meta_entry = {
                 "input": display_name,
-                "output": output_file.display_name if hasattr(output_file, "display_name") else output_display_name,
+                "output": output_file.display_name
+                if hasattr(output_file, "display_name")
+                else output_display_name,
                 "command": command_str,
                 "stderr": stderr_text.strip(),
             }
             if rdump_command:
                 per_file_meta_entry["rdump_command"] = rdump_command
                 per_file_meta_entry["rdump_stderr"] = rdump_stderr_text
+            if writer_enabled and writer_uri and query_name == DEFAULT_QUERY and not should_rdump:
+                record_bytes = _capture_record_output(
+                    query_name,
+                    argument_tokens,
+                    prepared_source_path,
+                    display_name,
+                )
+                _export_records_with_writer(
+                    record_bytes,
+                    writer_uri,
+                    query_name=query_name,
+                    display_name=display_name,
+                )
+                writer_used = True
+
+            if writer_used:
+                per_file_meta_entry["record_writer"] = writer_uri
+
             per_file_meta.append(per_file_meta_entry)
 
     if not output_files:

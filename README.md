@@ -8,7 +8,11 @@ workflow for download or further automation.
 ## What you can run from the OpenRelik UI
 
 - **Dissect target-info (`run_target_info`)** – single-click runs the standard `target-info`
-  recipe with no additional configuration.
+  recipe with no additional configuration. Optional ELK exports are available by pasting a Dissect
+  writer URI (for example `elastic+http://elastic:9200?index=dissect-target-info&verify_certs=false`)
+  into the new **Elastic writer URI** field. The worker transparently replays `target-info --record`
+  for each evidence file and streams the records through `rdump -w` so your Elasticsearch cluster
+  receives the same structured output the CLI would have produced.
 - **Dissect query (`run_query`)** – choose any Dissect console script (for example
   `target-query`, `target-dd`, `target-shell`) and provide optional CLI arguments. The worker
   captures stdout/stderr, raises clear errors when the tool exits
@@ -43,6 +47,7 @@ Add the worker to your OpenRelik `docker-compose` stack:
     environment:
       - REDIS_URL=redis://openrelik-redis:6379
       - OPENRELIK_PYDEBUG=0
+      - DISSECT_ELASTIC_WRITER_URI=elastic+https://elastic.example:9200?index=dissect-records&api_key=${ELASTIC_API_KEY}
     volumes:
       - ./data:/usr/share/openrelik/data
     command: "celery --app=src.app worker --task-events --concurrency=4 --loglevel=INFO -Q openrelik-worker-dissect-ncsc-nl"
@@ -86,6 +91,26 @@ uv run celery --app=src.app worker --task-events --concurrency=1 --loglevel=INFO
 - Prefer to reuse existing rule files? Supply a comma or newline separated list of rule paths or
   directories in the `yara_rule_paths` field. You can combine both inputs—the inline rule is written
   to a temporary file and passed along with any directories you provide.
+
+### Exporting to Elastic
+
+- The **target-info**, **generic run_query**, and **target-query bundle** tasks all expose an
+  **Elastic/Record writer URI** field. Paste any valid Dissect writer string (for example
+  `elastic+http://elasticsearch:9200?index=dissect-target-info&verify_certs=false`) to stream
+  record-formatted output directly to Elasticsearch using `rdump -w`.
+- You can preconfigure credentials inside Docker by setting `DISSECT_ELASTIC_WRITER_URI`
+  (or `DISSECT_RECORD_WRITER_URI`) on the worker service. When the env var is present the UI
+  auto-fills the URI and you only need to flip the export toggle.
+- Use the **Export to record writer** checkbox to control whether a run streams to Elastic. It is
+  off by default—even if an env var is set—so you can continue saving only local files unless you
+  explicitly opt in.
+- For `target-info`, the worker automatically reruns the recipe with `--record` to generate the
+  structured stream before handing it to `rdump`. For `target-query` and the bundle, the raw record
+  stream produced during CSV conversion is reused, so exporting adds minimal overhead.
+- Refer to the
+  [Dissect Elastic adapter docs](https://docs.dissect.tools/en/stable/api/flow/record/adapter/elastic/index.html)
+  for all available URI parameters (`api_key`, `username`/`password`, `verify_certs`, `request_timeout`,
+  `max_retries`, etc.). Whatever you append to the URI is passed straight through to `rdump -w`.
 
 ##### Obligatory Fine Print
 This is not an official product of Fox-IT, NCSC-NL, or any commercial entity. It is
