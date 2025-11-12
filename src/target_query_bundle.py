@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import re
+import tempfile
 from functools import lru_cache
 from pathlib import Path
 from typing import Iterable
-import re
-import tempfile
 
 from celery import signals
 from celery.utils.log import get_task_logger
@@ -37,6 +37,7 @@ CATEGORY_FILE_FOLDER_OPENING = "file_folder_opening"
 CATEGORY_DELETED_ITEMS = "deleted_items_file_existence"
 CATEGORY_BROWSER_ACTIVITY = "browser_activity"
 CATEGORY_EXTERNAL_DEVICE = "external_device_usage"
+CATEGORY_USER_INFORMATION = "user_information"
 
 SCOPE_ORDER = [
     CATEGORY_EVERYTHING,
@@ -47,6 +48,7 @@ SCOPE_ORDER = [
     CATEGORY_DELETED_ITEMS,
     CATEGORY_BROWSER_ACTIVITY,
     CATEGORY_EXTERNAL_DEVICE,
+    CATEGORY_USER_INFORMATION,
 ]
 
 SCOPE_VALUE_TO_LABEL = {
@@ -58,6 +60,7 @@ SCOPE_VALUE_TO_LABEL = {
     CATEGORY_DELETED_ITEMS: "Deleted items & file existence",
     CATEGORY_BROWSER_ACTIVITY: "Browser activity",
     CATEGORY_EXTERNAL_DEVICE: "External device & USB usage",
+    CATEGORY_USER_INFORMATION: "User information",
 }
 
 SCOPE_LABEL_TO_VALUE = {label: value for value, label in SCOPE_VALUE_TO_LABEL.items()}
@@ -124,6 +127,27 @@ logger = log_root.get_logger(__name__, get_task_logger(__name__))
 RDUMP_ARGS = ["-C", "--multi-timestamp"]
 
 TARGET_QUERY_BUNDLE = [
+    {
+        "name": "Local users (target-query)",
+        "arguments": ["-f", "users"],
+        "output_suffix": "users",
+        "categories": [CATEGORY_USER_INFORMATION],
+    },
+    {
+        "name": "SAM user names (target-reg)",
+        "command": "target-reg",
+        "arguments": [
+            "-k",
+            r"HKEY_LOCAL_MACHINE\SAM\SAM\Domains\Account\Users\Names",
+            "-d",
+            "2",
+        ],
+        "output_suffix": "sam_user_names",
+        "rdump_args": None,
+        "data_type": "openrelik:dissect:target-reg:text",
+        "decode_stdout": True,
+        "categories": [CATEGORY_USER_INFORMATION],
+    },
     {
         "name": "All event logs",
         "arguments": ["-f", "evtx"],
@@ -499,8 +523,8 @@ def _classify_presets(presets: Iterable[dict]) -> tuple[list[tuple[dict, str | N
     return available, unavailable
 
 
-def _bundle_command_display(source_path: str, arguments: Iterable[str]) -> str:
-    base = ["target-query", source_path, *arguments]
+def _bundle_command_display(source_path: str, arguments: Iterable[str], command: str = "target-query") -> str:
+    base = [command, source_path, *arguments]
     return quote_command(base)
 
 
@@ -634,19 +658,28 @@ def _run_bundle(
 
         with materialize_target_path(source_path, log=logger) as prepared_source_path:
             for preset, plugin_name in available_presets:
-                command_args = [prepared_source_path, *preset["arguments"]]
-                command_display = _bundle_command_display(prepared_source_path, preset["arguments"])
-                logger.info("Running target-query", extra={"command": command_display})
+                command_name = preset.get("command", "target-query")
+                preset_args = preset.get("arguments", [])
+                command_args = [prepared_source_path, *preset_args]
+                command_display = _bundle_command_display(
+                    prepared_source_path, preset_args, command=command_name
+                )
+                logger.info(
+                    "Running target bundle command", extra={"command": command_display}
+                )
 
+                decode_stdout = preset.get(
+                    "decode_stdout", command_name != "target-query"
+                )
                 exit_code, query_stdout, query_stderr = invoke_console_script(
-                    "target-query", command_args, decode_stdout=False
+                    command_name, command_args, decode_stdout=decode_stdout
                 )
 
                 send_progress(task)
 
                 if exit_code != 0:
                     logger.error(
-                        "target-query preset failed",
+                        "bundle preset failed",
                         extra={
                             "command": command_display,
                             "exit_code": exit_code,
@@ -660,23 +693,18 @@ def _run_bundle(
                     )
                     raise RuntimeError(
                         stderr_text.strip()
-                        or f"target-query preset '{preset['name']}' failed for {display_name}"
+                        or f"bundle preset '{preset['name']}' failed for {display_name}"
                     )
 
                 record_bytes: bytes | None = None
-                if writer_enabled and writer_uri:
+                if writer_enabled and writer_uri and command_name == "target-query":
                     if isinstance(query_stdout, (bytes, bytearray)):
                         record_bytes = query_stdout
                     else:
                         record_bytes = str(query_stdout).encode("utf-8")
-                    _export_records_with_writer(
-                        record_bytes,
-                        writer_uri,
-                        query_name="target-query",
-                        display_name=display_name,
-                    )
 
-                rdump_args = preset.get("rdump_args", RDUMP_ARGS)
+                default_rdump = RDUMP_ARGS if command_name == "target-query" else None
+                rdump_args = preset.get("rdump_args", default_rdump)
                 if rdump_args is None:
                     rdump_stdout = (
                         query_stdout.decode("utf-8", errors="replace")
@@ -686,7 +714,9 @@ def _run_bundle(
                     rdump_stderr = ""
                     rdump_command_display = ""
                     output_extension = preset.get("output_extension", "txt")
-                    data_type = preset.get("data_type", "openrelik:dissect:target-query:text")
+                    data_type = preset.get(
+                        "data_type", "openrelik:dissect:target-query:text"
+                    )
                 else:
                     rdump_exit, rdump_stdout, rdump_stderr = invoke_console_script(
                         "rdump",
@@ -703,12 +733,15 @@ def _run_bundle(
                             },
                         )
                         raise RuntimeError(
-                            rdump_stderr.strip() or f"rdump failed for preset '{preset['name']}'"
+                            rdump_stderr.strip()
+                            or f"rdump failed for preset '{preset['name']}'"
                         )
 
                     rdump_command_display = quote_command(["rdump", *rdump_args])
                     output_extension = preset.get("output_extension", "csv")
-                    data_type = preset.get("data_type", "openrelik:dissect:target-query:csv")
+                    data_type = preset.get(
+                        "data_type", "openrelik:dissect:target-query:csv"
+                    )
 
                 output_file = create_output_file(
                     output_path,
@@ -719,6 +752,16 @@ def _run_bundle(
 
                 with open(output_file.path, "w", encoding="utf-8") as handle:
                     handle.write(rdump_stdout)
+
+                writer_used = False
+                if writer_enabled and writer_uri and record_bytes is not None:
+                    _export_records_with_writer(
+                        record_bytes,
+                        writer_uri,
+                        query_name=command_name,
+                        display_name=display_name,
+                    )
+                    writer_used = True
 
                 output_files.append(output_file.to_dict())
                 entry_meta = {
@@ -734,7 +777,7 @@ def _run_bundle(
                     ).strip(),
                     "rdump_stderr": rdump_stderr.strip(),
                 }
-                if writer_enabled and writer_uri and record_bytes is not None:
+                if writer_used:
                     entry_meta["record_writer"] = writer_uri
                 meta_entries.append(entry_meta)
 

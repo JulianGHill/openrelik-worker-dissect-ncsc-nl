@@ -83,6 +83,8 @@ uv run celery --app=src.app worker --task-events --concurrency=1 --loglevel=INFO
   `Everything` to mimic the historical behaviour or add any combination of `all_event_logs`,
   `mft_timeline`, `application_execution`, `file_folder_opening`, `deleted_items_file_existence`,
   `browser_activity`, or `external_device_usage` for focused runs.
+- A new **User information** scope captures account-centric artefacts (`target-query -f users`,
+  `target-reg …Users\\Names\\`, etc.) so you can pull local user inventories and SAM details in one click.
 - The worker now bundles `yara-python`. Rebuild and redeploy the container after pulling this change,
   and re-run `uv sync --group test` locally so your venv picks up the dependency before running tests.
 - Provide a custom rule in the `yara_rule` textarea to run `target-query -f yara` alongside the
@@ -92,9 +94,14 @@ uv run celery --app=src.app worker --task-events --concurrency=1 --loglevel=INFO
   directories in the `yara_rule_paths` field. You can combine both inputs—the inline rule is written
   to a temporary file and passed along with any directories you provide.
 
+## TODO
+
+- Investigate a structured export path for registry artefacts (for example `target-reg --record` or
+  a custom helper) so presets like the SAM user list can stream JSON to Elastic without ad-hoc parsers.
+
 ### Exporting to Elastic
 
-- The **target-info**, **generic run_query**, and **target-query bundle** tasks all expose an
+- The **target-info**, **generic run_query** (including `target-reg`), and **target-query bundle** tasks all expose an
   **Elastic/Record writer URI** field. Paste any valid Dissect writer string (for example
   `elastic+http://elasticsearch:9200?index=dissect-target-info&verify_certs=false`) to stream
   record-formatted output directly to Elasticsearch using `rdump -w`.
@@ -106,7 +113,9 @@ uv run celery --app=src.app worker --task-events --concurrency=1 --loglevel=INFO
   explicitly opt in.
 - For `target-info`, the worker automatically reruns the recipe with `--record` to generate the
   structured stream before handing it to `rdump`. For `target-query` and the bundle, the raw record
-  stream produced during CSV conversion is reused, so exporting adds minimal overhead.
+  stream produced during CSV conversion is reused, so exporting adds minimal overhead. When you run the
+  bundle, every preset (including optional Yara scans) is streamed to the writer URI in addition to
+  the CSV files saved back into OpenRelik.
 - Refer to the
   [Dissect Elastic adapter docs](https://docs.dissect.tools/en/stable/api/flow/record/adapter/elastic/index.html)
   for all available URI parameters (`api_key`, `username`/`password`, `verify_certs`, `request_timeout`,

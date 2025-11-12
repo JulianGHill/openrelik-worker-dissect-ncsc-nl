@@ -249,12 +249,13 @@ def test_run_query_target_query_runs_writer(monkeypatch, tmp_output, writer_sour
 
 
 @pytest.mark.parametrize("writer_source", ["config", "env"])
-def test_run_query_target_info_streams_writer(monkeypatch, tmp_output, writer_source):
+@pytest.mark.parametrize("query_name", ["target-info", "target-reg"])
+def test_run_query_record_capture_streams_writer(monkeypatch, tmp_output, writer_source, query_name):
     input_file = {"path": "/cases/disk.E01", "display_name": "disk.E01"}
 
     monkeypatch.setattr(tasks, "get_input_files", lambda pipe_result, files, filter=None: [input_file])
 
-    fake_output = make_output_file(tmp_output, "disk-target-info.txt")
+    fake_output = make_output_file(tmp_output, f"disk-{query_name}.txt")
     monkeypatch.setattr(tasks, "create_output_file", lambda *args, **kwargs: fake_output)
 
     invoke_calls = []
@@ -277,8 +278,8 @@ def test_run_query_target_info_streams_writer(monkeypatch, tmp_output, writer_so
     monkeypatch.setattr(tasks, "invoke_console_script", fake_rdump)
     monkeypatch.setattr(tasks, "create_task_result", lambda **kwargs: "ok")
 
-    writer_uri = "elastic+http://elastic:9200?index=target-info"
-    task_config = {"query": "target-info"}
+    writer_uri = f"elastic+http://elastic:9200?index={query_name}"
+    task_config = {"query": query_name}
     if writer_source == "config":
         task_config["elastic_writer"] = writer_uri
     else:

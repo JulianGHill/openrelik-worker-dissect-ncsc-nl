@@ -74,6 +74,8 @@ DEFAULT_QUERY = "target-info"
 DEFAULT_RESULT_TYPE = "openrelik:dissect:query-result"
 TARGET_QUERY_RESULT_TYPE = "openrelik:dissect:target-query"
 TARGET_QUERY_RDUMP_ARGS = ["-C", "--multi-timestamp"]
+RECORD_WRITER_SUPPORTED_QUERIES = {DEFAULT_QUERY, "target-query", "target-reg"}
+RECORD_WRITER_CAPTURE_QUERIES = RECORD_WRITER_SUPPORTED_QUERIES - {"target-query"}
 
 log_root = Logger()
 logger = log_root.get_logger(__name__, get_task_logger(__name__))
@@ -91,7 +93,7 @@ def _ensure_record_arguments(query_name: str, args: list[str]) -> list[str]:
     if any(flag in record_args for flag in ("-r", "--record")):
         return record_args
 
-    if query_name == DEFAULT_QUERY:
+    if query_name in RECORD_WRITER_CAPTURE_QUERIES:
         return ["-r", *record_args]
 
     return record_args
@@ -385,9 +387,11 @@ def _run_query(
             "Record writer export was requested but no writer URI is configured."
         )
 
-    if writer_enabled and query_name not in {DEFAULT_QUERY, "target-query"}:
+    if writer_enabled and query_name not in RECORD_WRITER_SUPPORTED_QUERIES:
         raise RuntimeError(
-            f"Record writer export is currently supported for 'target-info' or 'target-query' but was requested for '{query_name}'."
+            "Record writer export is currently supported for 'target-info', "
+            "'target-query', or 'target-reg' but was requested for "
+            f"'{query_name}'."
         )
 
     logger.debug(
@@ -536,7 +540,12 @@ def _run_query(
             if rdump_command:
                 per_file_meta_entry["rdump_command"] = rdump_command
                 per_file_meta_entry["rdump_stderr"] = rdump_stderr_text
-            if writer_enabled and writer_uri and query_name == DEFAULT_QUERY and not should_rdump:
+            if (
+                writer_enabled
+                and writer_uri
+                and query_name in RECORD_WRITER_CAPTURE_QUERIES
+                and not should_rdump
+            ):
                 record_bytes = _capture_record_output(
                     query_name,
                     argument_tokens,
