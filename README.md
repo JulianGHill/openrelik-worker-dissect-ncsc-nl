@@ -98,6 +98,8 @@ uv run celery --app=src.app worker --task-events --concurrency=1 --loglevel=INFO
 
 - Investigate a structured export path for registry artefacts (for example `target-reg --record` or
   a custom helper) so presets like the SAM user list can stream JSON to Elastic without ad-hoc parsers.
+- Add optional `case_name` tagging to Elastic exports so records carry the incident/system context in
+  addition to hostnames. Field is stored as `case_name`.
 
 ### Exporting to Elastic
 
@@ -111,6 +113,8 @@ uv run celery --app=src.app worker --task-events --concurrency=1 --loglevel=INFO
 - Use the **Export to record writer** checkbox to control whether a run streams to Elastic. It is
   off by default—even if an env var is set—so you can continue saving only local files unless you
   explicitly opt in.
+- Set the optional **Case name** field when exporting so every document written to Elastic carries
+  that case identifier as `case_name` alongside hostnames and other metadata. Leave it blank to omit.
 - For `target-info`, the worker automatically reruns the recipe with `--record` to generate the
   structured stream before handing it to `rdump`. For `target-query` and the bundle, the raw record
   stream produced during CSV conversion is reused, so exporting adds minimal overhead. When you run the

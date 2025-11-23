@@ -22,6 +22,13 @@ TASK_METADATA = {
             "required": False,
         },
         {
+            "name": "case_name",
+            "label": "Case name",
+            "description": "Optional case identifier included in exported records (Elastic only).",
+            "type": "text",
+            "required": False,
+        },
+        {
             "name": "enable_record_writer",
             "label": "Export to record writer",
             "description": "Toggle streaming target-info records to the configured writer URI.",

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
 import os
 import shlex
 import sys
@@ -65,6 +66,13 @@ TASK_METADATA = {
             ),
             "type": "checkbox",
             "default": False,
+            "required": False,
+        },
+        {
+            "name": "case_name",
+            "label": "Case name",
+            "description": "Optional case identifier included in exported records (Elastic only).",
+            "type": "text",
             "required": False,
         },
     ],
@@ -133,12 +141,19 @@ def _export_records_with_writer(
     *,
     query_name: str,
     display_name: str,
+    case_name: str | None = None,
 ) -> None:
     logger.info(
         "Streaming Dissect records to writer",
         extra={"writer": writer_uri, "query": query_name, "input": display_name},
     )
     rdump_args = ["-w", writer_uri]
+    if case_name:
+        # The exec expression runs with record fields as locals; assign a simple field name.
+        rdump_args += [
+            "-E",
+            f"case_name={json.dumps(case_name)}",
+        ]
     exit_code, _, rdump_stderr = invoke_console_script(
         "rdump", rdump_args, stdin_data=record_bytes
     )
@@ -382,6 +397,8 @@ def _run_query(
     else:
         writer_enabled = bool(writer_toggle)
 
+    case_name = (config.get("case_name") or "").strip() or None
+
     if writer_enabled and not writer_uri:
         raise RuntimeError(
             "Record writer export was requested but no writer URI is configured."
@@ -512,6 +529,7 @@ def _run_query(
                         writer_uri,
                         query_name=query_name,
                         display_name=display_name,
+                        case_name=case_name,
                     )
                     writer_used = True
 
@@ -557,6 +575,7 @@ def _run_query(
                     writer_uri,
                     query_name=query_name,
                     display_name=display_name,
+                    case_name=case_name,
                 )
                 writer_used = True
 

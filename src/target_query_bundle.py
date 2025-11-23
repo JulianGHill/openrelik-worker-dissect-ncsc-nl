@@ -108,6 +108,13 @@ TASK_METADATA = {
             "required": False,
         },
         {
+            "name": "case_name",
+            "label": "Case name",
+            "description": "Optional case identifier included in exported records (Elastic only).",
+            "type": "text",
+            "required": False,
+        },
+        {
             "name": "enable_record_writer",
             "label": "Export to record writer",
             "description": (
@@ -592,6 +599,7 @@ def _run_bundle(
         writer_enabled = writer_uri_from_config is not None
     else:
         writer_enabled = bool(writer_toggle)
+    case_name = (config.get("case_name") or "").strip() or None
 
     if writer_enabled and not writer_uri:
         raise RuntimeError(
@@ -760,6 +768,7 @@ def _run_bundle(
                         writer_uri,
                         query_name=command_name,
                         display_name=display_name,
+                        case_name=case_name,
                     )
                     writer_used = True
 
